@@ -6,11 +6,29 @@ on:
       ref:
         description: pika repo ref to build
         default: vast-image
+  pull_request:
+    paths:
+      - .github/workflows/build.yml
 
 permissions: {}
 
 jobs:
+  source-access:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check private image repository read access
+        uses: actions/checkout@v4
+        with:
+          repository: 0xAndoroid/pika-config
+          ref: main
+          token: ${{ secrets.PIKA_REPO_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: docker/vast-image
+
   build:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
       - name: Free runner disk (CUDA image needs the space)
@@ -23,6 +41,18 @@ jobs:
           repository: 0xAndoroid/pika
           ref: ${{ inputs.ref }}
           token: ${{ secrets.PIKA_REPO_TOKEN }}
+          persist-credentials: false
+          path: pika-source
+
+      - name: Check out private image recipe
+        uses: actions/checkout@v4
+        with:
+          repository: 0xAndoroid/pika-config
+          ref: main
+          token: ${{ secrets.PIKA_REPO_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: docker/vast-image
+          path: image-source
 
       - uses: docker/setup-buildx-action@v3
 
@@ -34,12 +64,14 @@ jobs:
 
       - name: Resolve short sha
         id: sha
+        working-directory: pika-source
         run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/build-push-action@v6
         with:
-          context: .
-          file: docker/vast-image/Dockerfile
+          context: pika-source
+          file: image-source/docker/vast-image/Dockerfile
+          build-contexts: image=./image-source/docker/vast-image
           platforms: linux/amd64
           push: true
           tags: |
