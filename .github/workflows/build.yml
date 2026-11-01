@@ -12,68 +12,65 @@ on:
 
 permissions: {}
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  EXECUTOR_REPOSITORY: 0xAndoroid/pika-config
+  EXECUTOR_REVISION: b12cd7298248be5fbda58a8c9bca8e19ad3f1789
+
 jobs:
   source-access:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Check private image repository read access
-        uses: actions/checkout@v4
-        with:
-          repository: 0xAndoroid/pika-config
-          ref: main
-          token: ${{ secrets.PIKA_REPO_TOKEN }}
-          persist-credentials: false
-          sparse-checkout: docker/vast-image
+      - name: Check private executor metadata access
+        env:
+          GH_TOKEN: ${{ secrets.PIKA_REPO_TOKEN }}
+        run: |
+          : "${GH_TOKEN:?PIKA_REPO_TOKEN is required}"
+          gh api "repos/$EXECUTOR_REPOSITORY/commits/$EXECUTOR_REVISION" --silent
+          gh api "repos/$EXECUTOR_REPOSITORY/actions/workflows/vast-image.yml" --silent
 
   build:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
-      - name: Free runner disk (CUDA image needs the space)
+      - name: Dispatch the immutable reviewed executor
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ secrets.PIKA_REPO_TOKEN }}
+          PIKA_REF: ${{ inputs.ref }}
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+          : "${GH_TOKEN:?PIKA_REPO_TOKEN is required}"
+          executor_tag="pika-vast-executor-$EXECUTOR_REVISION"
+          immutable=$(gh api "repos/$EXECUTOR_REPOSITORY/releases/tags/$executor_tag" --jq .immutable)
+          revision=$(gh api "repos/$EXECUTOR_REPOSITORY/commits/$executor_tag" --jq .sha)
+          if [ "$immutable" != true ] || [ "$revision" != "$EXECUTOR_REVISION" ]; then
+            echo 'The executor release must be immutable and match the reviewed revision.' >&2
+            exit 1
+          fi
+          run_id=$(jq -n --arg ref "$executor_tag" --arg pika "$PIKA_REF" '{ref: $ref, inputs: {ref: $pika}}' |
+            gh api --method POST "repos/$EXECUTOR_REPOSITORY/actions/workflows/vast-image.yml/dispatches" \
+              -H 'X-GitHub-Api-Version: 2026-03-10' --input - \
+              --jq '.workflow_run_id // error("missing workflow run ID")')
+          printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+          printf 'Private workflow: https://github.com/%s/actions/runs/%s\n' "$EXECUTOR_REPOSITORY" "$run_id"
 
-      - uses: actions/checkout@v4
-        with:
-          repository: 0xAndoroid/pika
-          ref: ${{ inputs.ref }}
-          token: ${{ secrets.PIKA_REPO_TOKEN }}
-          persist-credentials: false
-          path: pika-source
-
-      - name: Check out private image recipe
-        uses: actions/checkout@v4
-        with:
-          repository: 0xAndoroid/pika-config
-          ref: main
-          token: ${{ secrets.PIKA_REPO_TOKEN }}
-          persist-credentials: false
-          sparse-checkout: docker/vast-image
-          path: image-source
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: 0xAndoroid
-          password: ${{ secrets.PIKA_REPO_TOKEN }}
-
-      - name: Resolve short sha
-        id: sha
-        working-directory: pika-source
-        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: pika-source
-          file: image-source/docker/vast-image/Dockerfile
-          build-contexts: image=./image-source/docker/vast-image
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ghcr.io/0xandoroid/pika-vast:latest
-            ghcr.io/0xandoroid/pika-vast:${{ steps.sha.outputs.short }}
+      - name: Wait for the private result without copying its logs
+        env:
+          GH_TOKEN: ${{ secrets.PIKA_REPO_TOKEN }}
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        # gh run watch requires classic-token scopes; this endpoint also accepts fine-grained Actions access.
+        run: |
+          while true; do
+            result=$(gh api "repos/$EXECUTOR_REPOSITORY/actions/runs/$RUN_ID" \
+              --jq '.status + ":" + (.conclusion // "")')
+            case "$result" in
+              completed:success) exit 0 ;;
+              completed:*) printf 'Private image workflow failed (%s).\n' "$result" >&2; exit 1 ;;
+              *) sleep 10 ;;
+            esac
+          done

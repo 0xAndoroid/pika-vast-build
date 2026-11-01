@@ -1,12 +1,9 @@
 # pika-vast-build
 
-This public repository contains only the image build workflow. It compiles the
-selected private `0xAndoroid/pika` revision and reads `docker/vast-image` from
-private `0xAndoroid/pika-config` main. No private image assets are stored here.
-
-The existing `PIKA_REPO_TOKEN` Actions secret must read both private repositories
-and write the existing `ghcr.io/0xandoroid/pika-vast` package. Its name, registry
-login and `latest`/short-Pika-commit tags are unchanged.
+This public repository dispatches the image workflow in private
+`0xAndoroid/pika-config` and waits for its result. It does not check out private
+source, build an image, download private logs, or transfer source/image artifacts.
+The public run exposes only the private run link and terminal status.
 
 Pass the deployed daemon's Pika commit explicitly:
 
@@ -14,7 +11,29 @@ Pass the deployed daemon's Pika commit explicitly:
 gh workflow run build.yml -R 0xAndoroid/pika-vast-build -f ref=<pika-commit>
 ```
 
-Pull requests that change the workflow run only a private-repository read check,
-using that same secret. They do not build or publish an image. Image publishing
-runs only on manual dispatch. The private image recipe must be merged into
-`pika-config` main before using the updated builder.
+`EXECUTOR_REVISION` in `build.yml` fixes the reviewed private workflow commit.
+Before dispatch, its `pika-vast-executor-<full-commit>` release must be immutable
+and its tag must resolve to that exact commit. A missing or mutable release
+fails; the helper never substitutes `main`. The private workflow uses that same
+commit for its image recipe and startup fixture. Updating the pin requires
+another source review.
+
+The private workflow retrieves source, builds and tests, then publishes on
+separate runners. It keeps private transfers in private Actions artifacts and
+publishes the existing `ghcr.io/0xandoroid/pika-vast:latest` and short-Pika-commit
+tags only after the actual-image fixture succeeds. The selected Pika source
+`ref` retains its existing meaning.
+
+The existing helper secret `PIKA_REPO_TOKEN` stays here. It needs Contents read
+and Actions write/read on `0xAndoroid/pika-config` for the pinned release metadata,
+dispatch and status requests. Pull requests run only the metadata-read check;
+that does not prove dispatch permission. No secret is copied
+into the private workflow or passed as a dispatch input.
+
+The private executor needs its own prepared source-read credential and write
+access to the image package. Publication uses its publish job's `GITHUB_TOKEN`,
+not a persistent publication token. The package must grant Actions Write access
+to `0xAndoroid/pika-config`. The private source
+documents the source credential, package grant, immutable executor release and
+native-image acceptance prerequisites.
+Build dispatch and image publication require their normal authorization.
