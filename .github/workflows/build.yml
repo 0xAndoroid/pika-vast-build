@@ -18,7 +18,7 @@ defaults:
 
 env:
   EXECUTOR_REPOSITORY: 0xAndoroid/pika-config
-  EXECUTOR_REVISION: f0d410c838d9c2dbcefe47d5c5f76e016241e2d6
+  EXECUTOR_REVISION: b9586cfd22f74a04dcc52cb4f91943ac04b25373
 
 jobs:
   source-access:
